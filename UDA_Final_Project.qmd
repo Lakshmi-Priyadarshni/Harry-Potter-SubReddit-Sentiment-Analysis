@@ -1,0 +1,284 @@
+---
+title: "Unstructured Data Analysis Project"
+format: html
+---
+
+## Introduction
+For this assignment, I wanted to use the opportunity to explore a topic I'm interested in. I decided to scrape the Reddit site using the PRAW API. More specifically, I collected data from the Harry Potter subreddit to perform sentiment analysis and topic modeling. This subreddit was created in 2018 and has 2.3 million members, with an average of nearly 1000 active members per day. 
+
+My aim was to collect data from the posts and comments to see what was the general sentiment (tone) and what topics fans mostly discussed. I also wanted to see if there is anything in common in the most upvoted posts or the posts with most comments to see what drove engagement.
+
+## Code
+First, I imported the packages required to do the API calls.
+```{python}
+import praw
+import prawcore
+import time
+import pandas as pd
+import numpy as np
+from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+
+reddit = praw.Reddit(
+    client_id="XXX",
+    client_secret="XXX",
+    user_agent="XXX")
+```
+
+
+Then, I added the subreddit I want to collect data from and what posts I want from them. Specifically, the top 1000 posts, and store them in a list. Then I defined a function to calculate the sentiment scores. Then I created an empty list, and collected the post and comment data I wanted, and stored them in the list. Then I stored the data in a dataframe. I chose the top 1000 posts and their respective first 10 comments from the "r/harrypotter" subreddit. I collected metrics such as post title, post content, date posted, number of upvotes, number of comments, and the associated stats for the retrieved comments. I also defined a function to run through each post/ comment and capture the sentiments expressed in these comments using vader. I used the try-except block and error-handling to avoid any potential API limit errors.
+
+```{python}
+from datetime import datetime
+
+analyzer = SentimentIntensityAnalyzer()
+
+subreddit = reddit.subreddit("harrypotter")
+top_posts = list(subreddit.top(limit=1000))
+
+def get_sentiment(text):
+    sentiment_score = analyzer.polarity_scores(text)
+    return sentiment_score['compound']
+
+data = []
+
+for post in top_posts:
+    try:
+        post_data = {
+            "Post_Title": post.title,
+            "Post_Content": post.selftext,
+            "Post_Date": datetime.utcfromtimestamp(post.created_utc),
+            "Post_Upvotes": post.score,
+            "Number_of_Comments": len(post.comments),
+            "Post_Sentiment": get_sentiment(post.title + " " + post.selftext)}
+
+        post.comments.replace_more(limit=0)
+        comments_data = []
+
+        for comment in post.comments[:10]:  
+            comment_data = {
+                "Comment_Text": comment.body,
+                "Comment_Upvotes": comment.score,
+                "Comment_Timestamp": datetime.utcfromtimestamp(comment.created_utc),
+                "Comment_Sentiment": get_sentiment(comment.body),}
+            comments_data.append(comment_data)
+
+        for comment_data in comments_data:
+            post_copy = post_data.copy()
+            post_copy.update(comment_data)
+            data.append(post_copy)
+
+    except prawcore.exceptions.TooManyRequests as e:
+        time.sleep(600) 
+        continue
+
+df = pd.DataFrame(data)
+df.to_csv("harry_potter_top_1000_posts_comments.csv", index=False)
+
+```
+
+```{python}
+hp_data = pd.read_csv("harry_potter_top_1000_posts_comments.csv")
+hp_data.head(10)
+```
+
+## Methods
+
+The original dataframe has each post with its respective first 10 comments, due to which there is some repetition. Hence, I'm making 2 separate dataframes. One that contains information on a post-level, with all of its comments aggregated together in each row, and another that contains the comments data.
+
+```{python}
+hp_data.columns
+
+hp_data["Post"] = hp_data["Post_Title"] + " - " + hp_data["Post_Content"]
+
+comments_agg = hp_data.groupby(
+    ["Post", 
+    "Post_Date", 
+    "Post_Upvotes", 
+    "Number_of_Comments", 
+    "Post_Sentiment"]).agg(
+        {"Comment_Text": lambda x: "  ".join(x.dropna())})
+
+posts_df = comments_agg.reset_index()
+
+posts_df.head(10)
+
+comments_df = pd.DataFrame(hp_data[['Comment_Text', 'Comment_Upvotes', 'Comment_Timestamp', 'Comment_Sentiment']])
+
+posts_df.to_csv("hp_posts.csv", index=False)
+comments_df.to_csv("hp_comments.csv", index=False)
+
+```
+
+## Results
+
+```{python}
+# Sentiment Scores Over Time
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+posts_df['Post_Date'] = pd.to_datetime(posts_df['Post_Date'])
+
+plt.figure(figsize=(10, 6))
+sns.lineplot(x='Post_Date', y='Post_Sentiment', data=posts_df, marker = 'o', color='brown')
+plt.title('Sentiment Score Over Time for Posts')
+plt.xlabel('Date')
+plt.ylabel('Sentiment Score')
+plt.grid(True)
+plt.show()
+
+```
+
+Next, I wanted to see if there is a relationship between 
+a) Post sentiment and number of upvotes and comments
+b) Comment sentiment and the number of upvotes
+
+To test this, I calculated their respective correlations.
+
+## Post-sentiment correlations
+```{python}
+#Relationship between post sentiment and the number of upvotes for the post
+sentiment_upvotes_cor_1 = posts_df[['Post_Sentiment', 'Post_Upvotes']].corr()
+sentiment_upvotes_cor_1
+
+plt.figure(figsize=(6, 4))
+sns.heatmap(sentiment_upvotes_cor_1, annot=True, cmap='coolwarm', vmin=-1, vmax=1)
+plt.title('Heatmap: Post Sentiment vs Upvotes')
+plt.show()
+```
+
+There is a very neglible negative correlation between post sentiment and the number of upvotes for the post.
+
+```{python}
+#Relationship between post sentiment and the number of comments under the post
+sentiment_comment_cor = posts_df[['Post_Sentiment', 'Number_of_Comments']].corr()
+sentiment_comment_cor
+
+plt.figure(figsize=(6, 4))
+sns.heatmap(sentiment_comment_cor, annot=True, cmap='coolwarm', vmin=-1, vmax=1)
+plt.title('Heatmap: Post Sentiment and Number of comments')
+plt.show()
+```
+
+There is a slight positive correlation between post sentiment and the number of comments for the post, indicating that posts with a positive tone may be receiving better engagement (comments).
+
+```{python}
+#Relationship between comment sentiment and the number of upvotes for the comment
+sentiment_upvotes_cor_2 = comments_df[['Comment_Sentiment', 'Comment_Upvotes']].corr()
+sentiment_upvotes_cor_2
+
+plt.figure(figsize=(6, 4))
+sns.heatmap(sentiment_upvotes_cor_2, annot=True, cmap='coolwarm', vmin=-1, vmax=1)
+plt.title('Heatmap: Comment Sentiment vs Upvotes')
+plt.show()
+```
+
+There is a very neglible negative correlation between comment sentiment and the number of upvotes for the comment.
+
+
+## Topic Modeling Results
+In this section, I focussed on topic models to see what are the most commonly used words, and the most commonly discussed topics in the subreddit among the top 1000 posts of all time (2018 - present).
+
+```{python}
+import spacy
+import nltk
+from nltk.corpus import stopwords
+from bertopic import BERTopic
+from sklearn.feature_extraction.text import TfidfVectorizer
+from joblib import dump
+
+nltk.download("stopwords")
+nlp = spacy.load("en_core_web_sm")
+
+stop_words = set(stopwords.words("english"))
+```
+
+I combined the posts and comments for the topic modeling because the goal of the topic model was to get a general sense of the type of discussions that happen in the subreddit.
+
+I removed the stop words and removed the most commonly occuring words and the rarest words from the analysis. Then, I used BERT to extract the topics for analysis. Although I tried several iterations in terms of the max_df and min_df and the number of categories, they did not give me more than 2 topics.
+
+```{python}
+posts_df['combined_text'] = posts_df['Post'] + " " + posts_df['Comment_Text']
+
+def preprocess(text):
+    doc = nlp(text)
+    return " ".join([token.lemma_ for token in doc if token.is_alpha])
+
+posts_df['combined_text'] = posts_df['combined_text'].apply(preprocess)
+
+vectorizer = TfidfVectorizer(stop_words="english", max_df=0.98, min_df=1)
+tfidf_matrix = vectorizer.fit_transform(posts_df['combined_text'])
+
+topic_model = BERTopic(vectorizer_model=vectorizer)
+topics, probs = topic_model.fit_transform(posts_df['combined_text'])
+
+dump([topic_model, topics, probs], "topic_model_tfidf_results.joblib")
+
+print(topic_model.get_topic_info())
+
+topic_model.visualize_barchart()
+
+```
+
+The topic categories talk about either the books, the plot, and the story in general, or about the movie, the actors who played the roles in those movies, etc.
+
+```{python}
+##Analyzing and visualizing Bigrams
+import gensim
+
+stop_words = nltk.corpus.stopwords.words('english')
+nlp = spacy.load('en_core_web_lg')
+
+def preprocess_text(texts):
+    return [[word for word in gensim.utils.simple_preprocess(str(doc)) if word not in stop_words] for doc in texts]
+
+data_words = preprocess_text(posts_df["combined_text"])
+
+bigram = gensim.models.Phrases(data_words, min_count=5, threshold=50)  
+bigram_mod = gensim.models.phrases.Phraser(bigram)
+
+data_words_bigrams = [bigram_mod[doc] for doc in data_words]
+
+def lemmatization(texts, allowed_postags=['NOUN', 'ADJ', 'VERB', 'ADV']):
+    texts_out = []
+    for sent in texts:
+        doc = nlp(" ".join(sent))
+        texts_out.append([token.lemma_ for token in doc if token.pos_ in allowed_postags])  # Lemmatize
+    return texts_out
+
+data_lemmatized = lemmatization(data_words_bigrams)
+
+id2word = gensim.corpora.Dictionary(data_lemmatized)
+
+bigrams_flat = [bigram for doc in data_words_bigrams for bigram in doc if "_" in bigram]
+df_bigrams = pd.DataFrame(bigrams_flat, columns=["Bigram"])
+df_bigrams = df_bigrams.value_counts().reset_index(name="Count")
+df_bigrams = df_bigrams.head(15) 
+
+plt.figure(figsize=(10, 5))
+sns.barplot(x="Count", y="Bigram", data=df_bigrams, palette="Reds_r")
+plt.title("Top Bigrams in r/harrypotter")
+plt.show()
+```
+
+These bigrams yielded predictable results, with the exception of the name "Danny Devito", who is in someway related to the Harry Potter fandom.
+
+## Discussions
+
+## Sentiment Analysis Results 
+
+The sentiment scores showed very interesting spikes and dips.
+
+1. There is a positive spike in 2018, which aligns with the release of the movie "Fantastic Beasts: The Crimes of Grindelwald" in 2018. But there is an immediate dip, which may indicate that the spike in the positive score maybe due to the hype before movie release, followed by a more neutral score because people may have had mixed reviews of the movie. 
+
+2. There is a huge drop in 2019-20, which was the period during which J.K.Rowling faced a public backlash for posting her opinions about transgender rights, which may have led to the dip at the end of 2019 and the beginning of 2020. 
+
+3. In June 2020, Rowling penned down an article where she provides some clarifications about her views, right after which there is a positive spike in the graph. But there are consequent spikes and drops, which is potentially caused by the polarity in the views expressed by people on the subreddits.
+
+4. In 2022, the movie The Secrets of Dumbledore released, and there is a spike and a drop which coincides with this event, similar to what was observed in 2018 before the previous movie release. 
+
+5. There are some microtrends observed during celebrity deaths including Helen McCrory (Narcissa Malfoy) in April 2021, and Maggie Smith (Minerva McGonagall) in September 2024. There are both negative and positive movements indicating a mix of fans expressing sadness and sharing positive comments about the actors.
+
+What I found interesting was that, even though the sentiment trends in the time series showed serious spikes and dips coinciding with the author's activities, the topic models do not capture them. It made me wonder if those activities had a greater impact on fans' perceptions of the books and movies rather than the author herself.
+
+## Conclusion
+Through this assignment, I was able to use APIs to gather data from a social media site like Reddit, clean the data and perform a sentiment analysis and topic modeling to arrive at some interesting insights. As someone who's been a Harry Potter fan for many years, this project was a fun way to explore and get a sense of what fellow fans talk about and what type of content they engage with, while improving my unstructured data analysis skills!
